@@ -18,7 +18,7 @@ permissions:
   security-events: write
 
 env:
-  GO_VERSION: "1.21"
+  GO_VERSION: "1.24"
   AWS_REGION: "us-east-1"
   ECR_REPOSITORY: "pos2/auth-service"
   SERVICE_DIR: "auth-service"
