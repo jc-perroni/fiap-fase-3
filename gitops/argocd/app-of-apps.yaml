@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# App of Apps — Aplicação raiz que gerencia todas as aplicações filhas.
+#
+# Esta Application aponta para gitops/argocd/applications/ e o ArgoCD
+# cria automaticamente um Application CRD para cada arquivo YAML nesta pasta.
+#
+# Como aplicar:
+#   kubectl apply -f gitops/argocd/app-of-apps.yaml
+#   (ou via Terraform module argocd após o cluster estar de pé)
+#
+# IMPORTANTE: substitua REPO_URL pelo endereço do seu repositório GitHub.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: feature-flags-apps
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    # Substitua pela URL do seu repositório GitHub
+    repoURL: https://github.com/jc-perroni/fiap-fase-3.git
+    targetRevision: main
+    path: gitops/argocd/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

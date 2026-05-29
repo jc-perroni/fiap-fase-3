@@ -1,0 +1,22 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tflock
+crash.log
+terraform.tfvars.secret
+secrets.auto.tfvars
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Go
+*.exe
+*.test
+
+# OS
+.DS_Store

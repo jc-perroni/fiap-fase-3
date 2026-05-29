@@ -1,0 +1,271 @@
+name: "CI — analytics-service"
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "analytics-service/**"
+      - ".github/workflows/ci-analytics-service.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "analytics-service/**"
+      - ".github/workflows/ci-analytics-service.yml"
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  AWS_REGION: "us-east-1"
+  ECR_REPOSITORY: "pos2/analytics-service"
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 1 — Build & Unit Test
+  # ───────────────────────────────────────────────────────────────────────────
+  build-test:
+    name: "Build & Unit Test"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: analytics-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: analytics-service/requirements.txt
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Verificar importações (smoke-build)
+        run: python -c "import ast, sys; ast.parse(open('app.py').read()); print('Sintaxe OK')"
+
+      - name: Instalar pytest
+        run: pip install pytest pytest-cov
+
+      - name: Unit Tests
+        run: python -m pytest --tb=short -v --cov=. --cov-report=xml || [ $? -eq 5 ]
+
+      - name: Upload cobertura de testes
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-analytics-service
+          path: analytics-service/coverage.xml
+          if-no-files-found: ignore
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 2 — Linter / Static Analysis
+  # ───────────────────────────────────────────────────────────────────────────
+  lint:
+    name: "Linter / Static Analysis"
+    runs-on: ubuntu-latest
+    needs: build-test
+    defaults:
+      run:
+        working-directory: analytics-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+          cache-dependency-path: analytics-service/requirements.txt
+
+      - name: Instalar ferramentas de lint
+        run: pip install flake8 pylint
+
+      - name: "flake8 — erros críticos (bloqueia em E9/F63/F7/F82)"
+        run: |
+          flake8 . \
+            --count \
+            --select=E9,F63,F7,F82 \
+            --show-source \
+            --statistics
+
+      - name: "flake8 — estilo completo (informacional)"
+        run: |
+          flake8 . \
+            --count \
+            --max-line-length=127 \
+            --statistics \
+            --exit-zero
+
+      - name: "pylint — análise estática (informacional)"
+        run: |
+          pylint app.py \
+            --disable=C,R \
+            --output-format=colorized \
+            --exit-zero || true
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 3 — Security Scan (SCA + SAST)
+  # ───────────────────────────────────────────────────────────────────────────
+  security-scan:
+    name: "Security Scan (SCA + SAST)"
+    runs-on: ubuntu-latest
+    needs: build-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: "SCA — Trivy (dependências, formato SARIF)"
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "analytics-service"
+          scanners: "vuln"
+          format: "sarif"
+          output: "trivy-sca.sarif"
+          severity: "CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
+
+      - name: "Upload SARIF — Trivy SCA"
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: trivy-sca.sarif
+          category: trivy-sca-analytics-service
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Instalar bandit
+        run: pip install bandit
+
+      - name: "SAST — bandit (bloqueio em HIGH)"
+        working-directory: analytics-service
+        run: |
+          bandit -r . -lll --format txt -o bandit-report.txt || BANDIT_EXIT=$?
+          cat bandit-report.txt || true
+          if [ "${BANDIT_EXIT:-0}" -ne 0 ]; then
+            echo "[BLOQUEADO] Bandit encontrou issues HIGH severity"
+            exit 1
+          fi
+          echo "SAST OK — nenhuma issue HIGH severity"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 4 — Docker Build, Container Scan & Push para ECR
+  # ───────────────────────────────────────────────────────────────────────────
+  docker:
+    name: "Docker Build, Scan & Push"
+    runs-on: ubuntu-latest
+    needs: [lint, security-scan]
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gerar tag da imagem
+        id: meta
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "tag=v1.0.0-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "local_image=analytics-service:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Docker Build
+        run: |
+          docker build \
+            --tag "${{ steps.meta.outputs.local_image }}" \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.ref=${{ github.ref_name }}" \
+            analytics-service/
+
+      - name: "Container Scan — Trivy (imagem Docker)"
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "image"
+          image-ref: ${{ steps.meta.outputs.local_image }}
+          format: "table"
+          exit-code: "1"
+          severity: "CRITICAL"
+          ignore-unfixed: true
+
+      - name: Configurar credenciais AWS
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login no Amazon ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Tag e Push para ECR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          REGISTRY="${{ steps.login-ecr.outputs.registry }}"
+          TAG="${{ steps.meta.outputs.tag }}"
+          LOCAL="${{ steps.meta.outputs.local_image }}"
+
+          docker tag "${LOCAL}" "${REGISTRY}/${{ env.ECR_REPOSITORY }}:${TAG}"
+          docker tag "${LOCAL}" "${REGISTRY}/${{ env.ECR_REPOSITORY }}:latest"
+          docker push "${REGISTRY}/${{ env.ECR_REPOSITORY }}:${TAG}"
+          docker push "${REGISTRY}/${{ env.ECR_REPOSITORY }}:latest"
+
+          echo "Imagem publicada: ${REGISTRY}/${{ env.ECR_REPOSITORY }}:${TAG}"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # JOB 5 — Atualizar tag da imagem no repositório GitOps
+  # ───────────────────────────────────────────────────────────────────────────
+  update-gitops:
+    name: "Atualizar tag no GitOps"
+    runs-on: ubuntu-latest
+    needs: docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configurar git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Atualizar tag da imagem no GitOps
+        run: |
+          TAG="${{ needs.docker.outputs.tag }}"
+          FILE="gitops/apps/analytics-service/deployment.yaml"
+          sed -i "s|pos2/analytics-service:.*|pos2/analytics-service:${TAG}|g" "${FILE}"
+          echo "Tag atualizada para: ${TAG}"
+          grep "image:" "${FILE}"
+
+      - name: Commit e Push
+        run: |
+          TAG="${{ needs.docker.outputs.tag }}"
+          git add gitops/apps/analytics-service/deployment.yaml
+          if ! git diff --staged --quiet; then
+            git commit -m "ci(gitops): atualiza analytics-service para ${TAG} [skip ci]"
+            git push
+          else
+            echo "Nenhuma alteracao detectada — tag ja e a mais recente"
+          fi

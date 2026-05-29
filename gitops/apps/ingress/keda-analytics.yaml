@@ -1,0 +1,35 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-aws-credentials
+  namespace: feature-flags
+spec:
+  secretTargetRef:
+    - parameter: awsAccessKeyID
+      name: aws-secret
+      key: AWS_ACCESS_KEY_ID
+    - parameter: awsSecretAccessKey
+      name: aws-secret
+      key: AWS_SECRET_ACCESS_KEY
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: analytics-service-scaler
+  namespace: feature-flags
+spec:
+  scaleTargetRef:
+    name: analytics-service
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  pollingInterval: 30
+  cooldownPeriod: 300
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: keda-aws-credentials
+      metadata:
+        # Atualizar com a URL real da fila (terraform output sqs_queue_url)
+        queueURL: https://sqs.us-east-1.amazonaws.com/ACCOUNT_ID/feature-flags-evaluation-sqs
+        queueLength: "10"
+        awsRegion: us-east-1
