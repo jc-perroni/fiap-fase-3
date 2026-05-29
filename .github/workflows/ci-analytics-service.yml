@@ -276,6 +276,7 @@ jobs:
           git add gitops/apps/analytics-service/deployment.yaml
           if ! git diff --staged --quiet; then
             git commit -m "ci(gitops): atualiza analytics-service para ${TAG} [skip ci]"
+            git pull --rebase origin main
             git push
           else
             echo "Nenhuma alteracao detectada — tag ja e a mais recente"
