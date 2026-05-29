@@ -123,7 +123,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: "SCA — Trivy (dependências, formato SARIF)"
+      - name: "SCA — Trivy (SARIF para GitHub Security tab)"
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: "fs"
@@ -132,7 +132,7 @@ jobs:
           format: "sarif"
           output: "trivy-sca.sarif"
           severity: "CRITICAL"
-          exit-code: "1"
+          exit-code: "0"
           ignore-unfixed: true
 
       - name: "Upload SARIF — Trivy SCA"
@@ -142,6 +142,17 @@ jobs:
         with:
           sarif_file: trivy-sca.sarif
           category: trivy-sca-targeting-service
+
+      - name: "SCA — Trivy (bloqueio em CRITICAL)"
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "targeting-service"
+          scanners: "vuln"
+          format: "table"
+          severity: "CRITICAL"
+          exit-code: "1"
+          ignore-unfixed: true
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
